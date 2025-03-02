@@ -1,0 +1,699 @@
+---
+title: "ST2_Analysis"
+author: "Gabriel Rojas"
+date: "2025-02-24"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r packages, include=FALSE}
+library(gtsummary)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(plotly)
+library(tidyr)
+library(openxlsx)
+library(readr)
+library(gamlss)
+library(gamlss2)
+library(lubridate)
+library(ggpubr)
+library(stats)
+library(patchwork)
+
+source("eval_MixDist.R")
+source("eval_ExtractMeta.R")
+source("eval_Analyse.R")
+```
+
+```{r setup and settings, include=FALSE}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = F, 
+                      cache = T,
+                      message = F, 
+                      warning = F,
+                      fig.height = 5,
+                      fig.width = 6,
+                      fig.align = 'center')
+
+Perc_bins <- c(seq(0,100),0.5, 2.5,97.5,99.5)
+Perc_bins <- Perc_bins[order(Perc_bins)]
+CO2_bins <- seq(300, 5000, length.out = 150)
+CO2_midbins <- CO2_bins[-length(CO2_bins)] + diff(CO2_bins)/2
+PM25_bins <- seq(0, 600, length.out = 200)
+T_bins <- seq(-20, 40, length.out = 61)
+RH_bins <- seq(0, 100, length.out = 101)
+HCHO_bins <- seq(0, 100, length.out = 101)
+TVOC_bins <- seq(0, 3000, length.out = 151)
+VOC_bins <- seq(0, 3000, length.out = 151)
+Radon_bins <- seq(0, 3000, length.out = 151)
+```
+
+# read and filter data
+```{r read data, include=FALSE}
+
+stats <- readRDS("../tmp/stats.Rds")
+
+filter_combi <- tibble(
+  room0 = c("BED", "LIV", "KIT", "LAU", "HOO", "CCO", "EHA", "ETA"),
+  tod  = c("23-07", "07-23", "07-23", "07-23", "07-23", "all", "all", "all"))
+
+df <- stats %>%
+  filter(!home=="General") %>% #avoid the "General" homes e.g. in Lodenareal for central mech system
+  semi_join(filter_combi, by = c("room0", "tod"))  # Keep only matching rows
+unique(df$study)
+```
+
+# prepare unaggregated data for summary grouped by room
+```{r prepare unaggregated data for summary by room, message=TRUE}
+df_pol <- df %>%
+  filter(variable %in% c("T","RH","CO2","PM25","PM1","HCHO","TVOC","VOC","Radon")) %>%
+  pivot_wider(id_cols = c("user","study","home","room","year","month","tod","room0","vent_type","country"),
+              names_from = variable, values_from = Mean, # make sure to also change in df_1pt
+              values_fn = list(Mean = mean)) %>%
+  mutate(TVOC = coalesce(VOC, TVOC)) %>%
+  select(-VOC)
+
+# alternative values to extract !! nake sure to also change for df_1pt
+# # median
+# df_pol <- df %>%
+#   unnest(perc) %>%
+#   filter(variable %in% c("T","RH","CO2","PM25","PM1","HCHO","TVOC","VOC","Radon")) %>%
+#   pivot_wider(id_cols = c("user","study","home","room","year","month","tod","room0","vent_type","country"),
+#               names_from = variable, values_from = p50,
+#               values_fn = list(p50 = mean)) %>%
+#   mutate(TVOC = coalesce(VOC, TVOC)) %>%
+#   select(-VOC)
+# 
+# # p95
+# df_pol <- df %>%
+#   unnest(perc) %>%
+#   filter(variable %in% c("T","RH","CO2","PM25","PM1","HCHO","TVOC","VOC","Radon")) %>%
+#   pivot_wider(id_cols = c("user","study","home","room","year","month","tod","room0","vent_type","country"),
+#               names_from = variable, values_from = p95,
+#               values_fn = list(p95 = mean)) %>%
+#   mutate(TVOC = coalesce(VOC, TVOC)) %>%
+#   select(-VOC)
+
+```
+
+# Summary table unaggregated data grouped by room
+```{r summary table unaggregated data by room}
+# Create summary table for with Mean values for BED
+tbl_bed <- tbl_summary(df_pol[df_pol$room0=="BED", c("T", "RH", "CO2", "PM25", "HCHO", "TVOC", "Radon","vent_type")],
+                      statistic = list(
+                        all_continuous() ~ "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}",
+                        T ~ "{mean} ({sd}),  \n N={N_nonmiss}",
+                        RH ~ "{mean} ({sd}),  \n N={N_nonmiss}"),
+                      digits = list(
+                        all_continuous() ~ 0,
+                        T ~ 1),
+                      by = vent_type, 
+                      label = list(
+                        T ~ "Temp. [°C)]",
+                        RH ~ "RH [%]",
+                        CO2 ~ "CO2 [ppm]",
+                        PM25 ~ "PM2.5 [µg/m³]",
+                        HCHO ~ "HCHO [µg/m³]",
+                        TVOC ~ "VOC signal [µg/m³]",
+                        Radon ~ "Radon [Bq/m³]"),
+                      missing = "no") %>%
+  add_overall(., last = FALSE) %>%
+  modify_header(., all_stat_cols() ~ "**{level}**")
+  #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+
+# Create summary table for with Mean values for LIV
+tbl_liv <- tbl_summary(df_pol[df_pol$room0=="LIV", c("T", "RH", "CO2", "PM25", "HCHO", "TVOC", "Radon", "vent_type")],
+                      statistic = list(
+                        all_continuous() ~ "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}",
+                        T ~ "{mean} ({sd}),  \n N={N_nonmiss}",
+                        RH ~ "{mean} ({sd}),  \n N={N_nonmiss}"),
+                      digits = list(
+                        all_continuous() ~ 0,
+                        T ~ 1),
+                      by = vent_type, 
+                      label = list(
+                        T ~ "Temp. [°C)]",
+                        RH ~ "RH [%]",
+                        CO2 ~ "CO2 [ppm]",
+                        PM25 ~ "PM2.5 [µg/m³]",
+                        HCHO ~ "HCHO [µg/m³]",
+                        TVOC ~ "VOC signal [µg/m³]",
+                        Radon ~ "Radon [Bq/m³]"),
+                      missing = "no") %>%
+  add_overall(., last = FALSE) %>%
+  modify_header(., all_stat_cols() ~ "**{level}**")
+  #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+
+# Create summary table for with Mean values for KIT
+tbl_kit <- tbl_summary(df_pol[df_pol$room0=="KIT", c("T", "RH", "CO2", "PM25", "TVOC","Radon","vent_type")],
+                      statistic = list(
+                        all_continuous() ~ "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}",
+                        T ~ "{mean} ({sd}),  \n N={N_nonmiss}",
+                        RH ~ "{mean} ({sd}),  \n N={N_nonmiss}"),
+                      digits = list(
+                        all_continuous() ~ 0,
+                        T ~ 1),
+                      by = vent_type, 
+                      label = list(
+                        T ~ "Temp. [°C)]",
+                        RH ~ "RH [%]",
+                        CO2 ~ "CO2 [ppm]",
+                        PM25 ~ "PM2.5 [µg/m³]",
+                        TVOC ~ "VOC signal [µg/m³]",
+                        Radon ~ "Radon [Bq/m³]"),
+                      missing = "no") %>%
+  add_overall(., last = FALSE) %>%
+  modify_header(., all_stat_cols() ~ "**{level}**")
+  #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+
+# Create summary table for with Mean values for LAU (living area undefined) and HOO home office
+tbl_lau <- tbl_summary(df_pol[df_pol$room0=="LAU" | df_pol$room0=="HOO", c("T", "RH", "CO2", "PM25", "HCHO", "TVOC","vent_type")],
+                      statistic = list(
+                        all_continuous() ~ "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}",
+                        T ~ "{mean} ({sd}),  \n N={N_nonmiss}",
+                        RH ~ "{mean} ({sd}),  \n N={N_nonmiss}"),
+                      digits = list(
+                        all_continuous() ~ 0,
+                        T ~ 1),
+                      by = vent_type, 
+                      label = list(
+                        T ~ "Temp. [°C)]",
+                        RH ~ "RH [%]",
+                        CO2 ~ "CO2 [ppm]",
+                        PM25 ~ "PM2.5 [µg/m³]",
+                        HCHO ~ "HCHO [µg/m³]",
+                        TVOC ~ "VOC signal [µg/m³]"),
+                      missing = "no") %>%
+  add_overall(., last = FALSE) %>%
+  modify_header(., all_stat_cols() ~ "**{level}**")
+  #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+
+# Create summary table for with Mean values for CCO (central corridor) and EHA/ETA (exhaust/extract flatwise)
+tbl_cco <- tbl_summary(df_pol[df_pol$room0=="CCO" | df_pol$room0=="EHA" | df_pol$room0=="ETA", c("T", "RH", "CO2", "vent_type")],
+                      statistic = list(
+                        all_continuous() ~ "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}",
+                        T ~ "{mean} ({sd}),  \n N={N_nonmiss}",
+                        RH ~ "{mean} ({sd}),  \n N={N_nonmiss}"),
+                      digits = list(
+                        all_continuous() ~ 0,
+                        T ~ 1),
+                      by = vent_type, 
+                      label = list(
+                        T ~ "Temp. [°C)]",
+                        RH ~ "RH [%]",
+                        CO2 ~ "CO2 [ppm]"),
+                      missing = "no") %>%
+  add_overall(., last = FALSE) %>%
+  modify_header(., all_stat_cols() ~ "**{level}**")
+  #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+
+# Stack tables
+tbl <- tbl_stack(list(tbl_bed, tbl_liv, tbl_kit, tbl_lau, tbl_cco),
+                 group_header = c("Bedrooms (23-07)", "Living rooms (07-23)", "Kitchen (07-23)", 
+                                  "Undefined living area incl. home-office room (07-23)",
+                                  "Central all-home measurement, e.g. extract duct, central corridor (0-24)"))
+
+# Format tables----
+tbl <- as_gt(tbl)
+tbl <- gt::tab_style(tbl, style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything()))
+tbl <- gt::opt_row_striping(tbl, row_striping = T)
+tbl <- gt::tab_options(tbl, row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82")
+#tbl <- gt::fmt_scientific(tbl)
+knitr::knit_print(tbl)
+
+```
+
+# prepare unaggregated data for summary grouped by pollutant
+```{r prepare unaggregated data for summary by pollutant, message=TRUE}
+
+df_room <- df %>%
+  filter(room0 %in% c("BED","LIV","KIT","LAU","HOO","CCO","EHA")) %>%
+  pivot_wider(id_cols = c("user","study","home","room","year","month","tod","variable","vent_type","country"),
+              names_from = room0, values_from = Mean,
+              values_fn = list(Mean = mean)) %>%
+  mutate(LAU = coalesce(LAU, HOO)) %>%
+  select(-HOO) %>%
+  mutate(CCO = coalesce(CCO, EHA)) %>%
+  select(-EHA)
+
+# combine VOC and TVOC (has do be done with care!)
+message("Changing VOC to TVOC. The following studies are affected: ")
+print(unique(df_room$study[df_room$variable=="VOC"]), max.levels = 0)
+df_room <- df_room %>%
+  mutate(variable = if_else(variable=="VOC", "TVOC", variable))
+
+# for (pol in c("T","RH","CO2","PM25","HCHO","TVOC","VOC","Radon")){
+#   message("Creating df_wide for: ", pol)
+#   dfa_tempo <- df[df$variable==pol,] %>%
+#     filter(room0 %in% c("BED","LIV","KIT","LAU","HOO","CCO","EHA")) %>%
+#     pivot_wider(id_cols = c("user","study","home","room","year","month","tod","variable","vent_type","country"),
+#                 names_from = room0, values_from = Mean,
+#                 values_fn = list(Mean = mean)) %>%
+#     mutate(LAU = if ("LAU" %in% names(.)) coalesce(LAU, HOO)) %>%
+#     select(-any_of("HOO")) %>%
+#     mutate(CCO = if ("CCO" %in% names(.)) coalesce(CCO, EHA)) %>%
+#     select(-any_of("EHA"))
+#   assign(paste0("Mean0_wide_",pol), dfa_tempo)
+# }
+# message("Combining all TVOC and VOC measurements from TS/low-cost sensors")
+# Mean0_wide_TVOC <- Mean0_wide_TVOC %>%
+#   full_join(.,Mean0_wide_VOC) %>%
+#   mutate(variable="TVOC")
+
+```
+
+# Summary table unaggregated data grouped by pollutant
+```{r summary table unaggregated data by pollutant}
+tbl_rooms <- list(T=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  RH=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  CO2=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  PM25=c("BED", "LIV", "KIT", "LAU", "vent_type"),
+                  HCHO=c("BED", "LIV", "LAU", "vent_type"),
+                  TVOC=c("BED", "LIV", "KIT", "LAU", "vent_type"),
+                  Radon=c("BED", "LIV", "KIT", "vent_type"))
+tbl_label <- list(T=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", KIT ~ "Kitchen (07-23)",
+                         LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract (0-24)"),
+                  RH=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", KIT ~ "Kitchen (07-23)",
+                          LAU ~ "Undef. living area / home-office (07-23)", CCO ~ "central corridor / extract (0-24)"),
+                  CO2=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", KIT ~ "Kitchen (07-23)",
+                           LAU ~ "Undef. living area / home-office (07-23)", CCO ~ "central corridor / extract"),
+                  PM25=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", KIT ~ "Kitchen (07-23)",
+                            LAU ~ "Undef. living area / home-office (07-23)"),
+                  HCHO=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", LAU ~ "Undef. living area / home-office (07-23)"),
+                  TVOC=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", KIT ~ "Kitchen (07-23)"),
+                  Radon=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room (07-23)", KIT ~ "Kitchen (07-23)"))
+tbl_header <- list(T="Temperature [°C]", RH="Relative Humidiy [%]", CO2="CO2 [ppm]", PM25="PM2.5 [µg/m³]",
+                                  HCHO="Formaldehyde [µg/m³]", TVOC="TVOC (incl. low cost sensor) [µg/m³]", Radon="Radon [Bq/m³]")
+
+for (pol in c("T","RH","CO2","PM25","HCHO","TVOC","Radon")){
+  message("Creating table for ", pol)
+  #tbl_x <- tbl_summary(get(paste0("Mean0_wide_",pol))[, tbl_rooms[[pol]] ],
+  tbl_x <- tbl_summary(df_room[df_room$variable==pol, tbl_rooms[[pol]] ],
+                       statistic = all_continuous() ~ ifelse(pol=="T" | pol=="RH", "{mean} ({sd}),  \n N={N_nonmiss}",
+                                                             "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}"),
+                       digits = all_continuous() ~ ifelse(pol=="T", 1, 0),
+                        by = vent_type, 
+                        label = tbl_label[[pol]],
+                        missing = "no") %>%
+    add_overall(., last = FALSE) %>%
+    modify_header(., label = tbl_header[[pol]]) %>%
+    modify_header(., all_stat_cols() ~ "**{level}**")
+    #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+    #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+  assign(paste0("tbl_s_",pol), as_gt(tbl_x) %>%
+           gt::tab_style(., style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything())) %>%
+           gt::opt_row_striping(., row_striping = T) %>%
+           gt::tab_options(., row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82"))
+  assign(paste0("tbl_",pol), tbl_x %>%
+           modify_header(., label ~ ""))
+  
+}
+
+# Stack tables
+tbl <- tbl_stack(list(tbl_T, tbl_RH, tbl_CO2, tbl_PM25, tbl_HCHO, tbl_TVOC, tbl_Radon),
+                 group_header = c("Temperature [°C]", "Relative Humidiy [%]", "CO2 [ppm]", "PM2.5 [µg/m³]",
+                                  "Formaldehyde [µg/m³]", "TVOC (incl. low cost sensor) [µg/m³]", "Radon [Bq/m³]"))
+# Format table----
+tbl <- as_gt(tbl)
+tbl <- gt::tab_style(tbl, style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything()))
+tbl <- gt::opt_row_striping(tbl, row_striping = T)
+tbl <- gt::tab_options(tbl, row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82")
+#tbl <- gt::fmt_scientific(tbl)
+#knitr::knit_print(tbl)
+knitr::knit_print(tbl_s_T)
+knitr::knit_print(tbl_s_RH)
+knitr::knit_print(tbl_s_CO2)
+knitr::knit_print(tbl_s_PM25)
+knitr::knit_print(tbl_s_HCHO)
+knitr::knit_print(tbl_s_TVOC)
+knitr::knit_print(tbl_s_Radon)
+#list(knitr::knit_print(tbl), knitr::knit_print(tbl_s_T), knitr::knit_print(tbl_s_RH),knitr::knit_print(tbl_s_CO2), knitr::knit_print(tbl_s_PM25), knitr::knit_print(tbl_s_HCHO), knitr::knit_print(tbl_s_TVOC), knitr::knit_print(tbl_s_Radon))
+```
+
+# Summary plot unaggregated data
+```{r plot }
+n_T <- df_pol[df_pol$room0 %in% c("BED","LIV", "KIT") & !is.na(df_pol$T),] %>%
+  group_by(room0,vent_type) %>%
+  summarise(N_count = n(), R_count = length(unique(paste0(study,home,room))))
+
+n_CO2 <- df_pol[df_pol$room0 %in% c("BED","LIV", "KIT") & !is.na(df_pol$CO2),] %>%
+  group_by(room0,vent_type) %>%
+  summarise(N_count = n(), R_count = length(unique(paste0(study,home,room))))
+
+n_PM25 <- df_pol[df_pol$room0 %in% c("BED","LIV", "KIT") & !is.na(df_pol$PM25),] %>%
+  group_by(room0,vent_type) %>%
+  summarise(N_count = n(), R_count = length(unique(paste0(study,home,room))))
+
+n_HCHO <- df_pol[df_pol$room0 %in% c("BED","LIV", "KIT") & !is.na(df_pol$HCHO),] %>%
+  group_by(room0,vent_type) %>%
+  summarise(N_count = n(), R_count = length(unique(paste0(study,home,room))))
+
+p1 <- ggplot(df_pol[df_pol$room0 %in% c("BED","LIV", "KIT"),], aes(x = room0, y = T, fill = vent_type)) +
+  #geom_violin(fill = "lightblue", color = "black") +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("BED" = "Bedroom (23-07)", "LIV" = "Living Room (07-23)", "KIT" = "Kitchen (07-23)")) +
+  stat_summary(fun = mean, geom = "point", color = "black", size = 2, shape = 1, position = position_dodge(0.8)) + # Mittlere Werte
+  geom_text(data = n_T, aes(x = room0, y = 12, label = paste0("N=",N_count)),
+            size = 3, position = position_dodge(0.8)) +
+  geom_text(data = n_T, aes(x = room0, y = 11, label = paste0("n=",R_count)),
+            size = 3, position = position_dodge(0.8)) +
+  geom_hline(yintercept = 30, linetype = "dashed", color = "black") +  # Cutoff-Grenze
+  annotate("text", x = 0.5, y = 30, label = "outliers above not shown", hjust=0, vjust = -0.2, size = 3, color = "black") + # Hinweistext
+  theme_minimal() +
+  coord_cartesian(ylim=c(10,30)) +
+  labs(x = "Room",
+        y = expression("Mean Temperature [°C]"))
+p1
+
+p2 <- ggplot(df_pol[df_pol$room0 %in% c("BED","LIV", "KIT"),], aes(x = room0, y = CO2, fill = vent_type)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("BED" = "Bedroom (23-07)", "LIV" = "Living Room (07-23)", "KIT" = "Kitchen (07-23)")) +
+  stat_summary(fun = mean, geom = "point", color = "black", size = 2, shape = 1, position = position_dodge(0.8)) + # Mittlere Werte
+  geom_text(data = n_CO2, aes(x = room0, y = 175, label = paste0("N=",N_count)),
+            size = 3, position = position_dodge(0.8)) +
+  geom_text(data = n_CO2, aes(x = room0, y = 75, label = paste0("n=",R_count)), 
+            size = 3, position = position_dodge(0.8)) +
+  geom_hline(yintercept = 2000, linetype = "dashed", color = "black") +  # Cutoff-Grenze
+  annotate("text", x = 0.5, y = 2000, label = "outliers above not shown", hjust=0, vjust = -0.2, size = 3, color = "black") + # Hinweistext
+  theme_minimal() +
+  coord_cartesian(ylim=c(0,2000)) +
+  labs(x = "Room",
+       y = expression("Mean CO"[2]~ "concentration [ppm]"))
+p2
+
+p3 <- ggplot(df_pol[df_pol$room0 %in% c("BED","LIV", "KIT"),], aes(x = room0, y = PM25, fill = vent_type)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("BED" = "Bedroom (23-07)", "LIV" = "Living Room (07-23)", "KIT" = "Kitchen (07-23)")) +
+  stat_summary(fun = mean, geom = "point", color = "black", size = 2, shape = 1, position = position_dodge(0.8)) + # Mittlere Werte
+  geom_text(data = n_PM25, aes(x = room0, y = 140, label = paste0("N=",N_count)),
+            size = 3, position = position_dodge(0.8)) +
+  geom_text(data = n_PM25, aes(x = room0, y = 130, label = paste0("n=",R_count)), 
+            size = 3, position = position_dodge(0.8)) +
+  geom_hline(yintercept = 150, linetype = "dashed", color = "black") +  # Cutoff-Grenze
+  annotate("text", x = 0.5, y = 150, label = "outliers above not shown", hjust=0, vjust = -0.2, size = 3, color = "black") + # Hinweistext
+  theme_minimal() +
+  coord_cartesian(ylim=c(0,150)) +
+  labs(x = "Room",
+       y = expression("Mean PM"[25]~ "concentration [µg/m³]"))
+p3
+
+p4 <- ggplot(df_pol[df_pol$room0 %in% c("BED","LIV"),], aes(x = room0, y = HCHO, fill = vent_type)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("BED" = "Bedroom (23-07)", "LIV" = "Living Room (07-23)")) +
+  stat_summary(fun = mean, geom = "point", color = "black", size = 2, shape = 1, position = position_dodge(0.8)) + # Mittlere Werte
+  geom_text(data = n_HCHO, aes(x = room0, y = 95, label = paste0("N=",N_count)),
+            size = 3, position = position_dodge(0.8)) +
+  geom_text(data = n_HCHO, aes(x = room0, y = 88, label = paste0("n=",R_count)), 
+            size = 3, position = position_dodge(0.8)) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "black") +  # Cutoff-Grenze
+  annotate("text", x = 0.5, y = 100, label = "outliers above not shown", hjust=0, vjust = -0.2, size = 3, color = "black") + # Hinweistext
+  theme_minimal() +
+  coord_cartesian(ylim=c(0,100)) +
+  labs(x = "Room",
+       y = expression("Mean HCHO concentration [µg/m³]"))
+p4
+
+(p1 + p2) / (p3 + p4) +
+plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",  # Move legend below
+    text = element_text(size = 10),
+    plot.caption = element_text(size = 8, face = "italic") )
+```
+
+# prepare aggregated data for summary grouped by pollutant (aggregated to one data point per room)
+```{r prepare aggregated TS-data for summary by pollutant, message=TRUE}
+
+#dfa_room <- data.frame()
+for (pol in c("T","RH","CO2","PM25","HCHO","TVOC","VOC","Radon")){
+  message("Aggregating ", pol)
+  Pol_bins <- get(paste0(pol,"_bins"))
+  #assign(paste0("dfa_",pol), aggRoom(df[df$variable==pol,],Perc_bins,Pol_bins))
+  dfa_xxx <- aggRoom(df[df$variable==pol,],Perc_bins,Pol_bins)
+  
+  dfa_xxx <- dfa_xxx %>%
+    filter(room0 %in% c("BED","LIV","KIT","LAU","HOO","CCO","EHA")) %>%
+    pivot_wider(id_cols = c("user","study","home","room","year","month","tod","variable","vent_type","country"),
+                names_from = room0, values_from = Mean,
+                values_fn = list(Mean = mean)) %>%
+    mutate(LAU = if ("LAU" %in% names(.)) coalesce(LAU, HOO)) %>%
+    select(-any_of("HOO")) %>%
+    mutate(CCO = if ("CCO" %in% names(.)) coalesce(CCO, EHA)) %>%
+    select(-any_of("EHA"))
+  
+  #dfa_room <- dfa_room %>%
+  #  full_join(.,dfa_xxx)
+  assign(paste0("dfa_room_",pol), dfa_xxx)
+}
+message("Changing VOC to TVOC. The following studies are affected: ")
+print(unique(dfa_room_VOC$study), max.levels = 0)
+dfa_room_TVOC <- dfa_room_TVOC %>%
+  full_join(.,dfa_room_VOC) %>%
+  mutate(variable="TVOC")
+
+rm(dfa_room_VOC)
+
+#dfa_PM <- aggRoom(df[df$variable=="PM25",],Perc_bins,PM_bins)
+#unique(dfa_PM$study)
+#dfa1 <- stats[stats$variable=="PM25" & stats$year =="all" & stats$month=="all" & stats$tod=="all",]
+#unique(dfa1$study) #not all studies have the full aggregation all, all, all
+```
+
+# Summary table aggregated data by pollutant
+```{r summary table aggregated TS-data by pollutant}
+tbl_rooms <- list(T=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  RH=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  CO2=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  PM25=c("BED", "LIV", "KIT", "LAU", "vent_type"),
+                  HCHO=c("BED", "LIV", "LAU", "vent_type"),
+                  TVOC=c("BED", "LIV", "KIT", "LAU", "vent_type"),
+                  Radon=c("BED", "LIV", "KIT", "vent_type"))
+tbl_label <- list(T=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract"),
+                  RH=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract"),
+                  CO2=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract"),
+                  PM25=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office"),
+                  HCHO=list(BED ~ "Bedroom", LIV ~ "Living room", LAU ~ "Undef. living area / home-office"),
+                  TVOC=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen"),
+                  Radon=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen"))
+tbl_header <- list(T="Temperature [°C]", RH="Relative Humidiy [%]", CO2="CO2 [ppm]", PM25="PM2.5 [µg/m³]",
+                                  HCHO="Formaldehyde [µg/m³]", TVOC="TVOC (incl. low cost sensor) [µg/m³]", Radon="Radon [Bq/m³]")
+
+for (pol in c("T","RH","CO2","PM25","HCHO","TVOC","Radon")){
+  message("Creating table for ", pol)
+  tbl_x <- tbl_summary(get(paste0("dfa_room_",pol))[, tbl_rooms[[pol]] ],
+                       statistic = all_continuous() ~ ifelse(pol=="T" | pol=="RH", "{mean} ({sd}),  \n N={N_nonmiss}",
+                                                             "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}"),
+                       digits = all_continuous() ~ ifelse(pol=="T", 1, 0),
+                        by = vent_type, 
+                        label = tbl_label[[pol]],
+                        missing = "no") %>%
+    add_overall(., last = FALSE) %>%
+    modify_header(., label = tbl_header[[pol]]) %>%
+    modify_header(., all_stat_cols() ~ "**{level}**")
+    #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+    #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+  assign(paste0("tbl_s_",pol), as_gt(tbl_x) %>%
+           gt::tab_style(., style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything())) %>%
+           gt::opt_row_striping(., row_striping = T) %>%
+           gt::tab_options(., row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82"))
+  assign(paste0("tbl_",pol), tbl_x %>%
+           modify_header(., label ~ ""))
+}
+
+# Stack tables
+tbl <- tbl_stack(list(tbl_T, tbl_RH, tbl_CO2, tbl_PM25, tbl_HCHO, tbl_TVOC, tbl_Radon),
+                 group_header = c("Temperature [°C]", "Relative Humidiy [%]", "CO2 [ppm]", "PM2.5 [µg/m³]",
+                                  "Formaldehyde [µg/m³]", "TVOC (incl. low cost sensor) [µg/m³]", "Radon [Bq/m³]"))
+
+# Format tables----
+tbl <- as_gt(tbl)
+tbl <- gt::tab_style(tbl, style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything()))
+tbl <- gt::opt_row_striping(tbl, row_striping = T)
+tbl <- gt::tab_options(tbl, row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82")
+#tbl <- gt::fmt_scientific(tbl)
+knitr::knit_print(tbl_s_T)
+knitr::knit_print(tbl_s_RH)
+knitr::knit_print(tbl_s_CO2)
+knitr::knit_print(tbl_s_PM25)
+knitr::knit_print(tbl_s_HCHO)
+knitr::knit_print(tbl_s_TVOC)
+knitr::knit_print(tbl_s_Radon)
+#list(knitr::knit_print(tbl), knitr::knit_print(tbl_s_T), knitr::knit_print(tbl_s_RH),knitr::knit_print(tbl_s_CO2), knitr::knit_print(tbl_s_PM25), knitr::knit_print(tbl_s_HCHO), knitr::knit_print(tbl_s_TVOC), knitr::knit_print(tbl_s_Radon))
+```
+
+# Combining with non time series (TS) data, e.g. passiv samplers (with only N=1, e.g. in Lueftung3 and IECH)
+```{r combining with single point data, message=TRUE}
+df_1pt <- stats %>%
+  filter(study %in% c("IECH","Lueftung3")) %>% #the two studies where single measurements have been documented: IECH and Lueftung3 
+  filter(N==1 | is.na(N)) %>%
+  mutate(year=as.numeric(year),
+         month=as.numeric(as.character(month)) )
+
+# make sure they have same pollutant name
+df_1pt$variable[df_1pt$study=="IECH" & df_1pt$variable=="Other12"] <- "Der_p1"
+df_1pt$variable[df_1pt$study=="Lueftung3" & df_1pt$variable=="Mites (Der p1)"] <- "Der_p1"
+df_1pt$variable[df_1pt$study=="IECH" & df_1pt$variable=="Other13"] <- "Der_f1"
+df_1pt$variable[df_1pt$study=="Lueftung3" & df_1pt$variable=="Mites (Der f1)"] <- "Der_f1"
+df_1pt$variable[df_1pt$study=="Lueftung3" & df_1pt$variable=="RAD"] <- "Radon"
+
+df_1pt <- df_1pt %>%
+  filter(room0 %in% c("BED","LIV","KIT","LAU")) %>%
+  pivot_wider(id_cols = c("user","study","home","room","year","month","tod","variable","vent_type","country"),
+              names_from = room0, values_from = Mean,
+              values_fn = list(Mean = mean))
+
+
+for (pol in c("Der_f1", "Der_p1", "HCHO", "TVOC", "Fungi", "Radon")){
+  message("Merging 1-point data: ", pol)
+  if (exists(paste0("dfa_room_", pol))){
+    dfa_xxx <- df_1pt[df_1pt$variable==pol,] %>%
+      full_join(.,get(paste0("dfa_room_", pol))) #%>%
+      #filter(!if_all(c(LIV, BED, KIT), is.na))
+    assign(paste0("dfa1_room_",pol),dfa_xxx)
+  } else {
+    assign(paste0("dfa1_room_",pol),df_1pt[df_1pt$variable==pol,])
+  }
+}
+
+```
+# Summary table all data (agg + 1 pt) by pollutant
+```{r summary table all data by pollutant}
+tbl_rooms <- list(T=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  RH=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  CO2=c("BED", "LIV", "KIT", "LAU", "CCO", "vent_type"),
+                  PM25=c("BED", "LIV", "KIT", "LAU", "vent_type"),
+                  HCHO=c("BED", "LIV", "LAU", "vent_type"),
+                  TVOC=c("BED", "LIV", "KIT", "LAU", "vent_type"),
+                  Radon=c("BED", "LIV", "KIT", "vent_type"))
+tbl_label <- list(T=list(BED ~ "Bedroom (23-07)", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract"),
+                  RH=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract"),
+                  CO2=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office", CCO ~ "central corridor / extract"),
+                  PM25=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen", LAU ~ "Undef. living area / home-office"),
+                  HCHO=list(BED ~ "Bedroom", LIV ~ "Living room", LAU ~ "Undef. living area / home-office"),
+                  TVOC=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen"),
+                  Radon=list(BED ~ "Bedroom", LIV ~ "Living room", KIT ~ "Kitchen"))
+tbl_header <- list(T="Temperature [°C]", RH="Relative Humidiy [%]", CO2="CO2 [ppm]", PM25="PM2.5 [µg/m³]",
+                                  HCHO="Formaldehyde [µg/m³]", TVOC="TVOC (incl. low cost sensor) [µg/m³]", Radon="Radon [Bq/m³]")
+
+for (pol in c("T","RH","CO2","PM25","HCHO","TVOC","Radon")){
+  message("Creating table for ", pol)
+  tbl_x <- tbl_summary(get(paste0("dfa_room_",pol))[, tbl_rooms[[pol]] ],
+                       statistic = all_continuous() ~ ifelse(pol=="T" | pol=="RH", "{mean} ({sd}),  \n N={N_nonmiss}",
+                                                             "{median}  \n({min}, {p5}, {p25}, {p75}, {p95}, {max}),  \n N={N_nonmiss}"),
+                       digits = all_continuous() ~ ifelse(pol=="T", 1, 0),
+                        by = vent_type, 
+                        label = tbl_label[[pol]],
+                        missing = "no") %>%
+    add_overall(., last = FALSE) %>%
+    modify_header(., label = tbl_header[[pol]]) %>%
+    modify_header(., all_stat_cols() ~ "**{level}**")
+    #add_p(., pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+    #modify_spanning_header(., c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Ventilation type**")
+  assign(paste0("tbl_s_",pol), as_gt(tbl_x) %>%
+           gt::tab_style(., style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything())) %>%
+           gt::opt_row_striping(., row_striping = T) %>%
+           gt::tab_options(., row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82"))
+  assign(paste0("tbl_",pol), tbl_x %>%
+           modify_header(., label ~ ""))
+}
+
+# Stack tables
+tbl <- tbl_stack(list(tbl_T, tbl_RH, tbl_CO2, tbl_PM25, tbl_HCHO, tbl_TVOC, tbl_Radon),
+                 group_header = c("Temperature [°C]", "Relative Humidiy [%]", "CO2 [ppm]", "PM2.5 [µg/m³]",
+                                  "Formaldehyde [µg/m³]", "TVOC (incl. low cost sensor) [µg/m³]", "Radon [Bq/m³]"))
+
+# Format tables----
+tbl <- as_gt(tbl)
+tbl <- gt::tab_style(tbl, style = gt::cell_text(weight = "bold"), locations = gt::cells_row_groups(groups = everything()))
+tbl <- gt::opt_row_striping(tbl, row_striping = T)
+tbl <- gt::tab_options(tbl, row.striping.background_color = "#E8EDF4", column_labels.background.color = "#3E5A82")
+#tbl <- gt::fmt_scientific(tbl)
+knitr::knit_print(tbl)
+knitr::knit_print(tbl_s_T)
+knitr::knit_print(tbl_s_RH)
+knitr::knit_print(tbl_s_CO2)
+knitr::knit_print(tbl_s_PM25)
+knitr::knit_print(tbl_s_HCHO)
+knitr::knit_print(tbl_s_TVOC)
+knitr::knit_print(tbl_s_Radon)
+#list(knitr::knit_print(tbl), knitr::knit_print(tbl_s_T), knitr::knit_print(tbl_s_RH),knitr::knit_print(tbl_s_CO2), knitr::knit_print(tbl_s_PM25), knitr::knit_print(tbl_s_HCHO), knitr::knit_print(tbl_s_TVOC), knitr::knit_print(tbl_s_Radon))
+```
+
+
+<!-- # Check distribution -->
+
+<!-- ```{r check distribution of variables, eval=FALSE} -->
+
+<!-- # Distribution of HCHO -->
+
+<!-- length(df$Mean) -->
+
+<!-- sum(is.na(df$Mean)) -->
+
+<!-- hist(df$Mean) -->
+
+<!-- ggqqplot(df$Mean) -->
+
+<!-- shapiro.test(df$Mean[1:5000]) -->
+
+<!-- df_test <- df[df$Mean != 0,] -->
+
+<!-- head(log(df_test$Mean)) -->
+
+<!-- sum(is.na(log(df$Mean))) -->
+
+<!-- hist(log(df_test$Mean)) -->
+
+<!-- ggqqplot(log(df$Mean)) -->
+
+<!-- shapiro.test(log(df_test$Mean[1:5000])) -->
+
+<!-- ``` -->
+
+<!-- # box plots -->
+
+<!-- ```{r check PM25 concentrations across studies, eval=FALSE} -->
+
+<!-- ggplot(df, aes(x=room0, y=Mean, fill=country)) +  -->
+
+<!--   geom_boxplot() + -->
+
+<!--   xlab("") + -->
+
+<!--   ylab("TVOC [µg/m3]") + -->
+
+<!--   labs(fill = "") #+ -->
+
+<!--   #ylim(0, 200) + -->
+
+<!--   #labs(tag = "(a)") + -->
+
+<!--   #scale_fill_manual(values = c("#C9D4E5", "#6989B7")) + -->
+
+<!--   # theme(panel.background = element_blank(), -->
+
+<!--   #       panel.border = element_blank(), -->
+
+<!--   #       axis.line = element_line(size = 0.5, linetype = "solid", colour = "black"), -->
+
+<!--   #       axis.text.x = element_text(size = 10, face = "plain"), -->
+
+<!--   #       axis.text.y = element_text(size = 10, face = "plain"), -->
+
+<!--   #       axis.title.x = element_text(size = 10, face = "plain"), -->
+
+<!--   #       axis.title.y = element_text(size = 10, face = "plain"), -->
+
+<!--   #       legend.position = c(0.2, 0.9)) -->
+
+<!-- ``` -->
